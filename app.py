@@ -15,44 +15,54 @@ def clean_currency(val: str) -> str:
     """Removes currency symbols and extra whitespace."""
     if not val:
         return ""
-    val = val.replace("₹", "").replace("INR", "").strip()
-    return val
+    return val.replace("₹", "").replace("INR", "").strip()
 
 
 def parse_invoice_pdf(pdf_bytes: bytes, filename: str) -> dict:
     """Extracts required invoice fields from Google Ads PDF bytes."""
     full_text = ""
+    pages_text = []
+
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                full_text += "\n" + page_text
+            t = page.extract_text() or ""
+            pages_text.append(t)
+            full_text += "\n" + t
 
-    # 1. Invoice Number
-    inv_num_match = re.search(r"Invoice\s*number[:\s]+(\d+)", full_text, re.IGNORECASE)
+    # 1. Invoice Number (Page 1 or anywhere)
+    inv_num_match = re.search(r"Invoice\s*number[:\s|]+(\d+)", full_text, re.IGNORECASE)
     invoice_number = inv_num_match.group(1).strip() if inv_num_match else ""
 
-    # 2. Account Name
-    account_match = re.search(r"Account[:\s]+([^\n\r]+)", full_text, re.IGNORECASE)
+    # 2. Account Name (Specifically targets 'Account:' without 'ID')
+    # Matches 'Account:' followed by the text on that line
     account_name = ""
-    if account_match:
-        # Ignore lines like 'Account ID:'
-        raw_account = account_match.group(1).strip()
-        if not raw_account.lower().startswith("id"):
-            account_name = raw_account
+    account_matches = re.findall(r"(?:^|\n)\s*Account\s*:\s*([^\n\r]+)", full_text, re.IGNORECASE)
+    for match in account_matches:
+        cleaned = match.strip()
+        # Ensure it's not capturing "Account ID: ..."
+        if not cleaned.lower().startswith("id"):
+            account_name = cleaned
+            break
 
-    # 3. Description
-    # Matches the item row between 'Description' headers and the subtotal section
+    # Fallback for Account Name: search line-by-line across all pages
+    if not account_name:
+        for line in full_text.splitlines():
+            line_str = line.strip()
+            if line_str.startswith("Account:") and not line_str.startswith("Account ID"):
+                account_name = line_str.split("Account:", 1)[1].strip()
+                break
+
+    # 3. Description (Usually on Page 2 under Description header)
+    description = ""
     desc_match = re.search(
         r"Description\s*\n\s*([^\n\r]+?)(?:\s+\d+\s+Clicks|\s+\d+\s+Impressions|\s+\d+\s+Units|\n)",
         full_text,
         re.IGNORECASE,
     )
-    description = ""
     if desc_match:
         description = desc_match.group(1).strip()
     else:
-        # Fallback regex for common campaign description placement
+        # Fallback regex for campaign naming pattern (e.g., ALSH_2_3_BHK_Google_Search_Primary)
         fallback_desc = re.search(
             r"([A-Za-z0-9_\-]+)\s+\d+\s+(?:Clicks|Units|Impressions)", full_text
         )
@@ -94,16 +104,16 @@ def parse_invoice_pdf(pdf_bytes: bytes, filename: str) -> dict:
     }
 
 
-# File Uploader supporting up to 500 MB
+# Set max_upload_size to 500 MB
 uploaded_file = st.file_uploader(
-    "Choose a ZIP file containing invoices", type=["zip"],
-    max_upload_size=500  # Sets the limit to 500 MB for this widget
+    "Choose a ZIP file containing invoices",
+    type=["zip"],
+    max_upload_size=500
 )
 
 if uploaded_file is not None:
     try:
         with zipfile.ZipFile(uploaded_file, "r") as z:
-            # Find all PDF files in archive, including subdirectories (ignoring macOS metadata folders)
             pdf_files = [
                 name
                 for name in z.namelist()
@@ -132,7 +142,7 @@ if uploaded_file is not None:
                 st.success("Extraction complete!")
                 st.dataframe(df, use_container_width=True)
 
-                # Export to Excel buffer
+                # Export to Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine="openpyxl") as writer:
                     df.to_excel(writer, index=False, sheet_name="Invoices")
