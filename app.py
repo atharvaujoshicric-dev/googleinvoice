@@ -96,7 +96,8 @@ def parse_invoice_pdf(pdf_bytes: bytes, filename: str) -> dict:
 
 # File Uploader supporting up to 500 MB
 uploaded_file = st.file_uploader(
-    "Choose a ZIP file containing invoices", type=["zip"]
+    "Choose a ZIP file containing invoices", type=["zip"],
+    max_upload_size=500  # Sets the limit to 500 MB for this widget
 )
 
 if uploaded_file is not None:
